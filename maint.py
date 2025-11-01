@@ -60,7 +60,7 @@ SECRET_KEY_ORDER = '0kFe6Oc3R1eEa2CpO2FeFdzElp'
 PUSH_TOKEN_ORDER = 'eR0EtNreq07htx3o06Hwwv:APA91bHqmhJLoFT0tAWBVGW0klBY-O3YmjHsGrQjFPlh4EvewiMzm8gBR422Ob6O9aMjH5n3cIXcF6-BGShYC6C7KC0Ymrxrkkp-bGe6fXsGNfsEZwjOuPk'
 USER_AGENT_ORDER = f'Fore Coffee/{APP_VERSION_ORDER} (coffee.fore.fore; build:1553; iOS 18.5.0) Alamofire/4.9.1'
 API_URL_STORE_SEARCH = "https://api.fore.coffee/store/all"
-# API_URL_PRODUCT_LIST Dihapus karena URL-nya dinamis berdasarkan store_id
+# (API Produk sekarang dinamis, cek api_get_all_products)
 
 # Konstanta Umum
 PLATFORM = 'ios'
@@ -96,14 +96,16 @@ def check_access(permission_required: str, credit_cost: int = 0):
                 await reply_func(chat_id=chat_id, text="Anda belum terdaftar. Silakan ketik /start dulu.")
                 return
             if user_data['is_admin'] == 1: return await func(update, context, *args, **kwargs)
-            if not user_data.get(permission_required, 0) == 1:
+            
+            # <<< PERBAIKAN: Gunakan akses key ['...'] untuk sqlite3.Row >>>
+            if not user_data[permission_required] == 1:
                  reply_func = update.message.reply_text if update.message else context.bot.send_message
                  chat_id = update.effective_chat.id if update.effective_chat else user_id
                  await reply_func(chat_id=chat_id, text="Anda tidak memiliki izin, hubungi admin untuk mendapatkan izin.")
                  return
             
             if credit_cost > 0:
-                 current_credits = user_data.get('credits', 0)
+                 current_credits = user_data['credits'] # <<< PERBAIKAN
                  if current_credits < credit_cost:
                     reply_func = update.message.reply_text if update.message else context.bot.send_message
                     chat_id = update.effective_chat.id if update.effective_chat else user_id
@@ -150,7 +152,8 @@ admin_reply_markup = ReplyKeyboardMarkup(admin_keyboard, resize_keyboard=True)
 def is_admin_check(user_id: int) -> bool:
     if user_id == ADMIN_ID: return True
     user_data = get_user(user_id)
-    return bool(user_data and user_data.get('is_admin') == 1)
+    # <<< PERBAIKAN: Gunakan akses key ['...'] untuk sqlite3.Row >>>
+    return bool(user_data and user_data['is_admin'] == 1)
 
 # --- Helper Headers ---
 def _get_api_headers(access_token: str, refresh_token: str, device_id: str) -> dict:
@@ -339,16 +342,15 @@ async def api_get_all_products(access_token: str, refresh_token: str, device_id:
                     logger.error(f"API /store/{store_id} mengembalikan payload dict, tapi tidak ditemukan list 'product': {payload.keys()}")
                     return {"success": False, "message": "Format data produk tidak dikenal."}
             
-            # PENANGANAN JIKA PAYLOAD BUKAN LIST
             elif not isinstance(payload, list):
                 logger.error(f"API /store/{store_id} mengembalikan tipe payload aneh: {type(payload)}")
                 return {"success": False, "message": "Format data API tidak dikenal."}
 
-            # Filter produk yang aktif
+            # Filter produk yang aktif (pd_status dan stpd_status)
             active_products = [prod for prod in payload if prod.get('pd_status') == 'active' and prod.get('stpd_status') == 'active']
             
             if not active_products and len(payload) > 0:
-                 logger.warning(f"Store {store_id}: Dapat {len(payload)} produk, tapi 0 yang aktif.")
+                 logger.warning(f"Store {store_id}: Dapat {len(payload)} produk, tapi 0 yang aktif (pd_status atau stpd_status tidak 'active').")
             elif not active_products and len(payload) == 0:
                  logger.warning(f"Store {store_id}: API mengembalikan 0 produk di payload.")
 
@@ -384,7 +386,8 @@ async def check_credits_command(update: Update, context: ContextTypes.DEFAULT_TY
         try: register_user(user_id, user_name); user_data = get_user(user_id)
         except Exception as e: logger.error(f"Gagal mendaftarkan admin {user_id}: {e}"); await update.message.reply_text("Error DB."); return
     elif not user_data: await update.message.reply_text("Anda belum terdaftar. /start dulu."); return
-    sisa_kredit_display = "∞ (Admin)" if is_admin_check(user_id) else user_data.get('credits', 0)
+    # <<< PERBAIKAN: Gunakan akses key ['...'] >>>
+    sisa_kredit_display = "∞ (Admin)" if is_admin_check(user_id) else user_data['credits']
     await update.message.reply_text(f"👤 **Nama:** {user_data['user_name']}\n🆔 **User ID:** `{user_id}`\n💳 **Sisa kredit:** {sisa_kredit_display}", parse_mode=ParseMode.MARKDOWN)
 
 @check_access(permission_required="can_cek_akun", credit_cost=0)
@@ -392,7 +395,8 @@ async def cek_akun(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     user_data = get_user(user_id)
     if not user_data: await update.message.reply_text("Data tidak ditemukan. /start dulu."); return
-    sisa_kredit_display = "∞ (Admin)" if is_admin_check(user_id) else user_data.get('credits', 0)
+    # <<< PERBAIKAN: Gunakan akses key ['...'] >>>
+    sisa_kredit_display = "∞ (Admin)" if is_admin_check(user_id) else user_data['credits']
     markup = admin_reply_markup if is_admin_check(user_id) else user_reply_markup
     await update.message.reply_text(f"👤 **Nama:** {user_data['user_name']}\n🆔 **User ID:** `{user_id}`\n💳 **Sisa kredit:** {sisa_kredit_display}", parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
 
@@ -402,8 +406,9 @@ async def start_fore_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     user_id = update.effective_user.id
     if not is_admin_check(user_id):
         user_data = get_user(user_id)
-        if user_data.get('credits', 0) < 1:
-            await update.message.reply_text(f"Kredit Anda tidak mencukupi (Sisa: {user_data.get('credits', 0)}, Butuh: 1)", reply_markup=user_reply_markup)
+        # <<< PERBAIKAN: Gunakan akses key ['...'] >>>
+        if user_data['credits'] < 1:
+            await update.message.reply_text(f"Kredit Anda tidak mencukupi (Sisa: {user_data['credits']}, Butuh: 1)", reply_markup=user_reply_markup)
             return ConversationHandler.END
     await update.message.reply_text("Izin OK. Masukkan Nomor HP (tanpa +62 atau 0).\n\n/cancel batal.", reply_markup=ReplyKeyboardRemove()); return ASK_FORE_PHONE
 
@@ -459,8 +464,9 @@ async def start_order_check(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     user_id = update.effective_user.id
     if not is_admin_check(user_id):
         user_data = get_user(user_id)
-        if user_data.get('credits', 0) < 5:
-            await update.message.reply_text(f"Kredit Anda tidak mencukupi (Sisa: {user_data.get('credits', 0)}, Butuh: 5)", reply_markup=user_reply_markup)
+        # <<< PERBAIKAN: Gunakan akses key ['...'] >>>
+        if user_data['credits'] < 5:
+            await update.message.reply_text(f"Kredit Anda tidak mencukupi (Sisa: {user_data['credits']}, Butuh: 5)", reply_markup=user_reply_markup)
             return ConversationHandler.END
             
     await update.message.reply_text("Izin OK. Masukkan Nomor HP (tanpa +62 atau 0).\n\n/cancel batal.", reply_markup=ReplyKeyboardRemove()); return ASK_ORDER_PHONE
@@ -625,7 +631,8 @@ async def select_order_and_show_detail(update: Update, context: ContextTypes.DEF
     cost = 5; credit_deducted_key = f'credit_deducted_for_{uor_id}'
     if not is_admin_check(user_id) and not context.user_data.get(credit_deducted_key, False):
         user_data_before = get_user(user_id)
-        if user_data_before and user_data_before.get('credits', 0) >= cost:
+        # <<< PERBAIKAN: Gunakan akses key ['...'] >>>
+        if user_data_before and user_data_before['credits'] >= cost:
             try:
                 update_credits(user_id, -cost); context.user_data[credit_deducted_key] = True
                 logger.info(f"{cost} kredit dipotong (Cek Order {uor_id})")
@@ -634,7 +641,8 @@ async def select_order_and_show_detail(update: Update, context: ContextTypes.DEF
                 if access_token and refresh_token and device_id: await api_logout(access_token, refresh_token, device_id)
                 context.user_data.clear(); return ConversationHandler.END
         else:
-             await context.bot.send_message(chat_id=user_id, text=f"Kredit Anda ({user_data_before.get('credits', 0)}) tidak mencukupi untuk melihat detail (butuh {cost}).", reply_markup=markup)
+             # <<< PERBAIKAN: Gunakan akses key ['...'] >>>
+             await context.bot.send_message(chat_id=user_id, text=f"Kredit Anda ({user_data_before['credits']}) tidak mencukupi untuk melihat detail (butuh {cost}).", reply_markup=markup)
              if access_token and refresh_token and device_id: await api_logout(access_token, refresh_token, device_id)
              context.user_data.clear(); return ConversationHandler.END
 
@@ -730,7 +738,8 @@ async def admin_user_list_callback(update: Update, context: ContextTypes.DEFAULT
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Target: {target_user['user_name']}\nJumlah kredit (misal: `100` atau `-10`):", parse_mode=ParseMode.MARKDOWN)
             return ASKING_CREDIT_AMOUNT
         if action in ("grant", "revoke"):
-            perm_keyboard = [[InlineKeyboardButton(p.replace('_', ' ').title(), callback_data=f"admin_perm_{p}")] for p in PERMISSION_NAMES if p != 'is_admin']
+            # <<< PERBAIKAN: Fitur admin dikembalikan, filter 'is_admin' Dihapus >>>
+            perm_keyboard = [[InlineKeyboardButton(p.replace('_', ' ').title(), callback_data=f"admin_perm_{p}")] for p in PERMISSION_NAMES]
             perm_keyboard.append([InlineKeyboardButton("Batalkan", callback_data="admin_cancel_perm")])
             verb = "diberikan" if action == "grant" else "dicabut"
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Target: {target_user['user_name']}\nPilih izin yang akan di-{verb}:", reply_markup=InlineKeyboardMarkup(perm_keyboard))
@@ -742,6 +751,7 @@ async def receive_credit_amount(update: Update, context: ContextTypes.DEFAULT_TY
     target_user_id = context.user_data['target_user_id']; target_user_name = context.user_data['target_user_name']
     try:
         update_credits(target_user_id, amount); new_data = get_user(target_user_id)
+        # <<< PERBAIKAN: Gunakan akses key ['...'] >>>
         await update.message.reply_text(f"✅ Berhasil!\nUser: {target_user_name}\nKredit sekarang: **{new_data['credits']}**", parse_mode=ParseMode.MARKDOWN, reply_markup=admin_reply_markup)
     except Exception as e: await update.message.reply_text(f"Gagal update DB: {e}", reply_markup=admin_reply_markup)
     context.user_data.clear(); return ConversationHandler.END
@@ -754,7 +764,9 @@ async def receive_permission_type(update: Update, context: ContextTypes.DEFAULT_
         context.user_data.clear(); return ConversationHandler.END
 
     parts = query_data.split("_"); permission_name = "_".join(parts[2:])
-    if permission_name not in PERMISSION_NAMES or permission_name == 'is_admin':
+    
+    # <<< PERBAIKAN: Filter 'is_admin' Dihapus, fitur dikembalikan >>>
+    if permission_name not in PERMISSION_NAMES:
         await query.edit_message_text("Izin tidak valid. Dibatalkan.", reply_markup=None)
         await context.bot.send_message(chat_id=update.effective_chat.id, text="Pilih aksi.", reply_markup=admin_reply_markup)
         context.user_data.clear(); return ConversationHandler.END
@@ -827,7 +839,7 @@ def build_product_keyboard(products: list, from_search: bool = False) -> InlineK
     return InlineKeyboardMarkup(keyboard)
 
 
-@check_access(permission_required="can_auto_order", credit_cost=0) # Cek izin
+@check_access(permission_required="can_auto_order", credit_cost=0)
 async def start_auto_order_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
         "Fitur Auto Order memerlukan login.\n"
@@ -1068,6 +1080,9 @@ async def handle_store_confirmation(update: Update, context: ContextTypes.DEFAUL
         if not all_products:
             await query.edit_message_text(f"Toko **{store_name}** tidak memiliki produk aktif saat ini.\nSilakan pilih toko lain.", parse_mode=ParseMode.MARKDOWN)
             await context.bot.send_message(chat_id=user_id, text="Masukkan keyword toko baru:")
+            # Hapus data toko terpilih
+            context.user_data.pop('selected_store_data', None)
+            context.user_data.pop('found_stores', None)
             return ASK_STORE_KEYWORD
             
         context.user_data['store_products'] = all_products
@@ -1106,6 +1121,9 @@ async def handle_category_or_search(update: Update, context: ContextTypes.DEFAUL
         context.user_data.pop('store_products', None)
         context.user_data.pop('product_categories', None)
         context.user_data.pop('selected_store_data', None)
+        context.user_data.pop('found_stores', None)
+        context.user_data.pop('store_map', None)
+        context.user_data.pop('current_keyword', None)
         await query.edit_message_text("Silakan masukkan keyword toko baru:")
         return ASK_STORE_KEYWORD
         
@@ -1114,6 +1132,7 @@ async def handle_category_or_search(update: Update, context: ContextTypes.DEFAUL
         
         full_cat_name = None
         for cat_name in categories.keys():
+            # Perbandingan yang lebih aman untuk prefix
             if cat_name.startswith(selected_cat_name_prefix):
                 full_cat_name = cat_name
                 break
@@ -1130,7 +1149,7 @@ async def handle_category_or_search(update: Update, context: ContextTypes.DEFAUL
         
         prod_keyboard = build_product_keyboard(products_in_cat, from_search=False)
         await query.edit_message_text(f"Produk dalam Kategori: **{full_cat_name}**", reply_markup=prod_keyboard)
-        context.user_data['previous_state'] = SHOW_PRODUCT_CATEGORIES # Simpan state
+        context.user_data['previous_state'] = SHOW_PRODUCT_CATEGORIES
         return SHOW_PRODUCT_LIST
         
     else:
@@ -1176,7 +1195,7 @@ async def receive_product_search(update: Update, context: ContextTypes.DEFAULT_T
     
     prod_keyboard = build_product_keyboard(matched_products, from_search=True)
     await update.message.reply_text(f"Hasil pencarian untuk: '{keyword}'", reply_markup=prod_keyboard)
-    context.user_data['previous_state'] = ASK_PRODUCT_SEARCH # Simpan state
+    context.user_data['previous_state'] = ASK_PRODUCT_SEARCH
     return SHOW_SEARCH_RESULTS
     
 async def handle_product_list_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1231,6 +1250,8 @@ async def handle_product_list_action(update: Update, context: ContextTypes.DEFAU
             context.user_data.pop('found_stores', None)
             context.user_data.pop('store_map', None)
             context.user_data.pop('current_keyword', None)
+            # Hapus juga data login Cek Akun Fore (jika ada)
+            context.user_data.pop('phone_root', None)
             
             return ConversationHandler.END
 
@@ -1301,7 +1322,8 @@ def main() -> None:
         states={
             SELECTING_USER: [CallbackQueryHandler(admin_user_list_callback, pattern="^admin_")],
             ASKING_CREDIT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_credit_amount)],
-            ASKING_PERMISSION_TYPE: [CallbackQueryHandler(receive_permission_type, pattern="^admin_perm_.*"), CallbackQueryHandler(cancel_admin_flow, pattern="^admin_cancel_perm$")], # PERBAIKAN regex
+            # <<< PERBAIKAN: regex di admin_perm_.* >>>
+            ASKING_PERMISSION_TYPE: [CallbackQueryHandler(receive_permission_type, pattern="^admin_perm_.*"), CallbackQueryHandler(cancel_admin_flow, pattern="^admin_cancel_perm$")],
         },
         fallbacks=[CommandHandler("cancel", cancel_admin_flow), CallbackQueryHandler(cancel_admin_flow, pattern="^admin_cancel$")],
         per_user=True, per_message=False,
@@ -1314,7 +1336,8 @@ def main() -> None:
         states={
             ASK_ORDER_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_order_phone)],
             ASK_ORDER_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_order_pin_and_get_list)],
-            SELECTING_ORDER: [CallbackQueryHandler(select_order_and_show_detail, pattern="^order_select_.*|^order_cancel$")], # PERBAIKAN regex
+            # <<< PERBAIKAN: regex di order_select_.* >>>
+            SELECTING_ORDER: [CallbackQueryHandler(select_order_and_show_detail, pattern="^order_select_.*|^order_cancel$")],
             AWAITING_REFRESH: [CallbackQueryHandler(handle_refresh_or_finish, pattern="^order_action_")]
         },
         fallbacks=[CommandHandler("cancel", cancel_order_check)],
@@ -1331,13 +1354,16 @@ def main() -> None:
             ASK_LOGIN_PIN_FOR_AUTO_ORDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_auto_order_login_pin_and_ask_keyword)],
             # Tahap 1: Pilih Toko
             ASK_STORE_KEYWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_store_keyword)],
-            SHOW_STORE_LIST: [CallbackQueryHandler(handle_store_selection_or_action, pattern="^auto_order_(select_.*|search_again|cancel)$")], # <<< PERBAIKAN (.*)
+            # <<< PERBAIKAN: regex di auto_order_select_.* >>>
+            SHOW_STORE_LIST: [CallbackQueryHandler(handle_store_selection_or_action, pattern="^auto_order_(select_.*|search_again|cancel)$")],
             CONFIRM_STORE_SELECTION: [CallbackQueryHandler(handle_store_confirmation, pattern="^auto_order_(confirm|reselect)$")],
             # Tahap 2: Pilih Produk
-            SHOW_PRODUCT_CATEGORIES: [CallbackQueryHandler(handle_category_or_search, pattern="^prod_(cat_.*|search|back_store)$")], # <<< PERBAIKAN (.*)
+            # <<< PERBAIKAN: regex di prod_cat_.* >>>
+            SHOW_PRODUCT_CATEGORIES: [CallbackQueryHandler(handle_category_or_search, pattern="^prod_(cat_.*|search|back_store)$")],
             ASK_PRODUCT_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_product_search)],
-            SHOW_PRODUCT_LIST: [CallbackQueryHandler(handle_product_list_action, pattern="^prod_(select_.*|back_cat)$")], # <<< PERBAIKAN (.*)
-            SHOW_SEARCH_RESULTS: [CallbackQueryHandler(handle_product_list_action, pattern="^prod_(select_.*|back_search)$")] # <<< PERBAIKAN (.*)
+            # <<< PERBAIKAN: regex di prod_select_.* >>>
+            SHOW_PRODUCT_LIST: [CallbackQueryHandler(handle_product_list_action, pattern="^prod_(select_.*|back_cat)$")],
+            SHOW_SEARCH_RESULTS: [CallbackQueryHandler(handle_product_list_action, pattern="^prod_(select_.*|back_search)$")]
         },
         fallbacks=[CommandHandler("cancel", cancel_auto_order), CallbackQueryHandler(cancel_auto_order, pattern="^auto_order_cancel$")],
         per_user=True, per_message=False,
