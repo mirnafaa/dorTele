@@ -55,12 +55,14 @@ PUSH_TOKEN_FORE = 'fGrAkMySNEQhq6MwdM1tCN:APA91bFf_R3hwVWd1HPU-CR17o4BV88zydGzs7
 USER_AGENT_FORE = f'Fore Coffee/{APP_VERSION_FORE} (coffee.fore.fore; build:1459; iOS 18.5.0) Alamofire/4.9.1'
 
 # --- Konstanta API BARU (CEK ORDER & AUTO ORDER) ---
-APP_VERSION_ORDER = '4.8.0'
+APP_VERSION_ORDER = '4.10.0' # Sesuai cURL baru
 SECRET_KEY_ORDER = '0kFe6Oc3R1eEa2CpO2FeFdzElp'
 PUSH_TOKEN_ORDER = 'eR0EtNreq07htx3o06Hwwv:APA91bHqmhJLoFT0tAWBVGW0klBY-O3YmjHsGrQjFPlh4EvewiMzm8gBR422Ob6O9aMjH5n3cIXcF6-BGShYC6C7KC0Ymrxrkkp-bGe6fXsGNfsEZwjOuPk'
-USER_AGENT_ORDER = f'Fore Coffee/{APP_VERSION_ORDER} (coffee.fore.fore; build:1553; iOS 18.5.0) Alamofire/4.9.1'
+USER_AGENT_ORDER = 'Fore Coffee/4.10.0 (coffee.fore.fore; build:1560; iOS 18.5.0) Alamofire/5.10.2' # Sesuai cURL baru
 API_URL_STORE_SEARCH = "https://api.fore.coffee/store/all"
-# (API Produk sekarang dinamis, cek api_get_all_products)
+API_URL_PRODUCT_LIST = "https://api.fore.coffee/product/v2" # Endpoint GET produk list
+API_URL_PRODUCT_DETAIL_BASE = "https://api.fore.coffee/product/v2" # Endpoint GET detail (/{pd_id})
+API_URL_ADD_TO_CART = "https://api.fore.coffee/checkout/cart" # Endpoint POST keranjang
 
 # Konstanta Umum
 PLATFORM = 'ios'
@@ -69,6 +71,10 @@ DEVICE_MODEL = 'iPhone 12'
 COUNTRY_ID = '1'
 LANGUAGE = 'id'
 DEFAULT_TIMEOUT_SECONDS = 600
+
+# <<< BARU: Kategori Opsi Wajib >>>
+# Tentukan cat_id yang WAJIB ditanyakan ke user
+REQUIRED_OPTION_CAT_IDS = [6, 26, 16] # 6=Ukuran, 26=Sweetness, 16=Ice
 
 # --- 2. Decorator untuk Izin & Kredit ---
 def admin_only(func):
@@ -97,7 +103,7 @@ def check_access(permission_required: str, credit_cost: int = 0):
                 return
             if user_data['is_admin'] == 1: return await func(update, context, *args, **kwargs)
             
-            # <<< PERBAIKAN: Gunakan akses key ['...'] untuk sqlite3.Row >>>
+            # <<< PERBAIKAN: Akses key ['...'] untuk sqlite3.Row >>>
             if not user_data[permission_required] == 1:
                  reply_func = update.message.reply_text if update.message else context.bot.send_message
                  chat_id = update.effective_chat.id if update.effective_chat else user_id
@@ -117,20 +123,23 @@ def check_access(permission_required: str, credit_cost: int = 0):
     return decorator
 # -----------------------------
 
-# --- 3. Definisi Keyboard & State ---
+## --- 3. Definisi Keyboard & State ---
 # State Cek Fore
 ASK_FORE_PHONE, ASK_FORE_PIN = range(2)
 # State Admin
 SELECTING_USER, ASKING_CREDIT_AMOUNT, ASKING_PERMISSION_TYPE = range(2, 5)
-# State Cek Order
+
+# State Cek Order (4 state, range(5, 9) -> 5, 6, 7, 8)
 ASK_ORDER_PHONE, ASK_ORDER_PIN, SELECTING_ORDER, AWAITING_REFRESH = range(5, 9)
-# State Auto Order
+
+# State Auto Order (11 state, range(9, 20) -> 9, 10, ... 19)
 (
     ASK_LOGIN_PHONE_FOR_AUTO_ORDER, ASK_LOGIN_PIN_FOR_AUTO_ORDER, 
     ASK_STORE_KEYWORD, SHOW_STORE_LIST, CONFIRM_STORE_SELECTION,
     SHOW_PRODUCT_CATEGORIES, SHOW_PRODUCT_LIST, 
-    ASK_PRODUCT_SEARCH, SHOW_SEARCH_RESULTS
-) = range(9, 18)
+    ASK_PRODUCT_SEARCH, SHOW_SEARCH_RESULTS,
+    SELECT_PRODUCT_OPTIONS, HANDLE_ADD_TO_CART
+) = range(9, 20)
 
 
 PERMISSION_NAMES = ['can_cek_akun', 'can_cek_fore', 'is_admin', 'can_cek_order', 'can_auto_order']
@@ -142,6 +151,7 @@ user_keyboard = [
     [KeyboardButton("Cek Orderan"), KeyboardButton("Auto Order")]
 ]
 user_reply_markup = ReplyKeyboardMarkup(user_keyboard, resize_keyboard=True)
+
 admin_keyboard = [
     [KeyboardButton("Cek Akun"), KeyboardButton("Cek Akun Fore")],
     [KeyboardButton("Cek Orderan"), KeyboardButton("Auto Order")],
@@ -152,7 +162,7 @@ admin_reply_markup = ReplyKeyboardMarkup(admin_keyboard, resize_keyboard=True)
 def is_admin_check(user_id: int) -> bool:
     if user_id == ADMIN_ID: return True
     user_data = get_user(user_id)
-    # <<< PERBAIKAN: Gunakan akses key ['...'] untuk sqlite3.Row >>>
+    # <<< PERBAIKAN: Akses key ['...'] untuk sqlite3.Row >>>
     return bool(user_data and user_data['is_admin'] == 1)
 
 # --- Helper Headers ---
@@ -191,14 +201,12 @@ async def process_fore_check(phone_root: str, pin: str) -> dict:
             resp3=await client.get('https://api.fore.coffee/user/profile/detail',headers=headers_step3);resp3.raise_for_status();profile_data=resp3.json()
             profile_payload=profile_data.get('payload',{});reff=profile_payload.get('user_code','-');nama=profile_payload.get('user_name','Tidak Diketahui')
             
-            # <<< LOGIKA HITUNG POIN ASLI (DARI HISTORY) >>>
             headers_step4={'access-token':access_token,'device-id':device_id,'app-version':APP_VERSION_FORE,'secret-key':SECRET_KEY_FORE,'platform':PLATFORM,'user-agent':USER_AGENT_FORE}
             resp4=await client.get('https://api.fore.coffee/loyalty/history',headers=headers_step4);resp4.raise_for_status();points_data=resp4.json();history=points_data.get('payload',[]);total_poin=0
             for item in history:
                 jenis=item.get('lylhis_type_remarks','');jumlah=item.get('ulylhis_amount',0)
                 if jenis in ['Poin Didapat','Bonus Poin','Poin Ditukar']:
                     total_poin+=jumlah
-            # <<< AKHIR LOGIKA ASLI >>>
 
             headers_step5={'Access-Token':access_token,'Device-Id':device_id,'App-Version':APP_VERSION_FORE,'Secret-Key':SECRET_KEY_FORE,'User-Agent':USER_AGENT_FORE,'Platform':PLATFORM}
             resp5=await client.get('https://api.fore.coffee/user/voucher?disc_type=cat_promo&page=1&perpage=100&st_id=0&vc_disc_type=order',headers=headers_step5);resp5.raise_for_status();vouchers_data=resp5.json();voucher_list_raw=vouchers_data.get('payload',{}).get('data',[]);vouchers_list=[]
@@ -312,45 +320,48 @@ async def api_search_stores(access_token: str, refresh_token: str, device_id: st
             logger.exception(f"Gagal api_search_stores for '{keyword}':")
             return {"success": False, "message": f"Terjadi error saat mencari toko: {str(e)}"}
 
-# <<< FUNGSI API GET PRODUCTS DIPERBAIKI >>>
-async def api_get_all_products(access_token: str, refresh_token: str, device_id: str, store_id: int) -> dict:
-    """Mengambil semua produk untuk store_id tertentu DENGAN delivery_type=pickup."""
+# <<< PERBAIKAN: Fungsi ini sekarang memanggil 2 API sesuai cURL baru >>>
+async def api_set_store_and_get_products(access_token: str, refresh_token: str, device_id: str, store_id: int) -> dict:
+    """
+    Mengikuti alur baru:
+    1. Panggil /store/{id} dengan delivery_type=pickup untuk 'mengaktifkan' toko di sesi.
+    2. Panggil /product/v2?store={id} untuk mendapatkan daftar produk.
+    """
     if not all([access_token, refresh_token, device_id]):
         return {"success": False, "message": "Token/Device ID tidak ditemukan untuk get products."}
 
     headers = _get_api_headers(access_token, refresh_token, device_id)
-    headers.pop('Content-Type', None)
-    
-    # Endpoint diubah ke /store/{store_id}
-    url = f"https://api.fore.coffee/store/{store_id}"
-    # Params diubah untuk menyertakan delivery_type=pickup
-    params = {'delivery_type': 'pickup', 'lat': '', 'long': ''}
+    headers.pop('Content-Type', None) # Ini GET request
 
     async with httpx.AsyncClient() as client:
         try:
-            resp = await client.get(url, headers=headers, params=params)
-            resp.raise_for_status()
+            # --- PANGGILAN 1: Mengatur Store & Delivery Type ---
+            url_set_store = f"https://api.fore.coffee/store/{store_id}"
+            params_set_store = {'delivery_type': 'pickup', 'lat': '', 'long': ''}
             
-            payload = resp.json().get('payload', [])
-
-            # PENANGANAN JIKA PAYLOAD ADALAH DICT (Info Toko + Produk)
-            if isinstance(payload, dict):
-                # Kita asumsikan list produk ada di key 'product'
-                if 'product' in payload and isinstance(payload.get('product'), list):
-                    payload = payload['product']
-                else:
-                    logger.error(f"API /store/{store_id} mengembalikan payload dict, tapi tidak ditemukan list 'product': {payload.keys()}")
-                    return {"success": False, "message": "Format data produk tidak dikenal."}
+            logger.info(f"Memanggil API (Set Store): {url_set_store} dengan params {params_set_store}")
+            resp_set_store = await client.get(url_set_store, headers=headers, params=params_set_store)
+            resp_set_store.raise_for_status()
+            logger.info(f"Panggilan (Set Store) ke {store_id} berhasil.")
             
-            elif not isinstance(payload, list):
-                logger.error(f"API /store/{store_id} mengembalikan tipe payload aneh: {type(payload)}")
-                return {"success": False, "message": "Format data API tidak dikenal."}
+            # --- PANGGILAN 2: Mengambil Produk ---
+            url_get_product = API_URL_PRODUCT_LIST # https://api.fore.coffee/product/v2
+            params_get_product = {'store': str(store_id)}
+            
+            logger.info(f"Memanggil API (Get Product): {url_get_product} dengan params {params_get_product}")
+            resp_get_product = await client.get(url_get_product, headers=headers, params=params_get_product)
+            resp_get_product.raise_for_status()
+            
+            payload = resp_get_product.json().get('payload', [])
 
-            # Filter produk yang aktif (pd_status dan stpd_status)
+            if not isinstance(payload, list):
+                logger.error(f"API {url_get_product} tidak mengembalikan list. Tipe: {type(payload)}")
+                return {"success": False, "message": "Format data API produk salah."}
+
             active_products = [prod for prod in payload if prod.get('pd_status') == 'active' and prod.get('stpd_status') == 'active']
             
             if not active_products and len(payload) > 0:
-                 logger.warning(f"Store {store_id}: Dapat {len(payload)} produk, tapi 0 yang aktif (pd_status atau stpd_status tidak 'active').")
+                 logger.warning(f"Store {store_id}: Dapat {len(payload)} produk, tapi 0 yang aktif.")
             elif not active_products and len(payload) == 0:
                  logger.warning(f"Store {store_id}: API mengembalikan 0 produk di payload.")
 
@@ -358,17 +369,106 @@ async def api_get_all_products(access_token: str, refresh_token: str, device_id:
             return {"success": True, "products": active_products}
         
         except httpx.HTTPStatusError as e:
-            logger.error(f"Gagal API get_all_products (HTTP {e.response.status_code}) for store {store_id}: {e.response.text}")
+            logger.error(f"Gagal API selama set_store/get_products (HTTP {e.response.status_code}) for store {store_id}: {e.response.text}")
             try:
                 error_payload = e.response.json().get('payload', {})
                 api_error = error_payload.get('errors', [{}])[0].get('text', 'Error tidak diketahui')
-                return {"success": False, "message": f"Gagal ambil produk (API: {api_error})"}
+                return {"success": False, "message": f"Gagal (API: {api_error})"}
             except Exception:
-                return {"success": False, "message": f"Gagal ambil produk (API Error {e.response.status_code})"}
+                return {"success": False, "message": f"Gagal (API Error {e.response.status_code})"}
         except Exception as e:
-            logger.exception(f"Gagal api_get_all_products for store {store_id}:")
-            return {"success": False, "message": f"Terjadi error saat mengambil produk: {str(e)}"}
+            logger.exception(f"Gagal api_set_store_and_get_products for store {store_id}:")
+            return {"success": False, "message": f"Terjadi error: {str(e)}"}
 # <<< AKHIR PERBAIKAN FUNGSI API >>>
+
+# <<< BARU: Fungsi API untuk Get Product Detail >>>
+async def api_get_product_detail(access_token: str, refresh_token: str, device_id: str, pd_id: int, store_id: int) -> dict:
+    """Mengambil detail satu produk untuk melihat opsinya."""
+    if not all([access_token, refresh_token, device_id]):
+        return {"success": False, "message": "Token/Device ID tidak ditemukan."}
+
+    headers = _get_api_headers(access_token, refresh_token, device_id)
+    headers.pop('Content-Type', None)
+    
+    url = f"{API_URL_PRODUCT_DETAIL_BASE}/{pd_id}" # e.g., /product/v2/2070
+    params = {'store': str(store_id)}
+
+    async with httpx.AsyncClient() as client:
+        try:
+            logger.info(f"Memanggil API (Get Detail): {url} dengan params {params}")
+            resp = await client.get(url, headers=headers, params=params)
+            resp.raise_for_status()
+            
+            payload = resp.json().get('payload')
+            if not payload or not isinstance(payload, dict):
+                logger.error(f"API Get Detail {pd_id} mengembalikan payload kosong atau salah format.")
+                return {"success": False, "message": "Format data detail produk salah."}
+            
+            return {"success": True, "data": payload}
+        
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Gagal API get_product_detail (HTTP {e.response.status_code}) for pd_id {pd_id}: {e.response.text}")
+            return {"success": False, "message": f"Gagal ambil detail (API Error {e.response.status_code})"}
+        except Exception as e:
+            logger.exception(f"Gagal api_get_product_detail for pd_id {pd_id}:")
+            return {"success": False, "message": f"Terjadi error: {str(e)}"}
+
+# <<< BARU: Fungsi API untuk Add to Cart >>>
+async def api_add_to_cart(access_token: str, refresh_token: str, device_id: str, store_id: int, child_pd_id: int, additional_pa_ids: list) -> dict:
+    """Mengirim produk yang sudah dikonfigurasi ke keranjang."""
+    if not all([access_token, refresh_token, device_id]):
+        return {"success": False, "message": "Token/Device ID tidak ditemukan."}
+
+    headers = _get_api_headers(access_token, refresh_token, device_id) # Content-Type application/json sudah ada di sini
+    
+    # Buat payload 'products'
+    pd_additionals_payload = [{"pa_id": pa_id, "pa_qty": 1, "free_qty": 0} for pa_id in additional_pa_ids]
+    products_payload = [{
+        "pd_additionals": pd_additionals_payload,
+        "pd_bundle": [],
+        "pd_id": child_pd_id,
+        "order": 1,
+        "cartpd_qty": 1,
+        "preset_id": 0,
+        "is_suggestion": 0,
+        "is_carousel": 0
+    }]
+    
+    # Buat payload 'cart_data'
+    cart_data_payload = {
+        "straw": 0, "take_away": 0, "paper_bag": 0, "auto_apply_delivery_vc": False,
+        "courier_code": "", "delivery_internal": 0, "tissue": 0, "uadd_temporary": {},
+        "st_id": store_id, "notes": "", "vc_codes": [], "delivery": "dine_in", # Asumsi dine_in
+        "uadd_id": -1, "reusable_bag": 0, "auto_apply_vc": False
+    }
+    
+    # Buat payload final
+    final_payload = {
+        "cart_data": cart_data_payload,
+        "is_address_optional": 1,
+        "products": products_payload
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            logger.info(f"Memanggil API (Add to Cart) untuk pd_id {child_pd_id} di store {store_id}")
+            resp = await client.post(API_URL_ADD_TO_CART, headers=headers, json=final_payload)
+            resp.raise_for_status()
+            
+            payload = resp.json().get('payload')
+            if not payload or not isinstance(payload, dict):
+                logger.error(f"API Add to Cart {child_pd_id} mengembalikan payload kosong atau salah format.")
+                return {"success": False, "message": "Format data keranjang salah."}
+            
+            return {"success": True, "data": payload}
+        
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Gagal API api_add_to_cart (HTTP {e.response.status_code}) for pd_id {child_pd_id}: {e.response.text}")
+            return {"success": False, "message": f"Gagal tambah keranjang (API Error {e.response.status_code})"}
+        except Exception as e:
+            logger.exception(f"Gagal api_add_to_cart for pd_id {child_pd_id}:")
+            return {"success": False, "message": f"Terjadi error: {str(e)}"}
+# <<< AKHIR FUNGSI API BARU >>>
 
 
 # --- 6. Perintah Bot (Handlers Async) ---
@@ -386,7 +486,6 @@ async def check_credits_command(update: Update, context: ContextTypes.DEFAULT_TY
         try: register_user(user_id, user_name); user_data = get_user(user_id)
         except Exception as e: logger.error(f"Gagal mendaftarkan admin {user_id}: {e}"); await update.message.reply_text("Error DB."); return
     elif not user_data: await update.message.reply_text("Anda belum terdaftar. /start dulu."); return
-    # <<< PERBAIKAN: Gunakan akses key ['...'] >>>
     sisa_kredit_display = "∞ (Admin)" if is_admin_check(user_id) else user_data['credits']
     await update.message.reply_text(f"👤 **Nama:** {user_data['user_name']}\n🆔 **User ID:** `{user_id}`\n💳 **Sisa kredit:** {sisa_kredit_display}", parse_mode=ParseMode.MARKDOWN)
 
@@ -395,7 +494,6 @@ async def cek_akun(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     user_data = get_user(user_id)
     if not user_data: await update.message.reply_text("Data tidak ditemukan. /start dulu."); return
-    # <<< PERBAIKAN: Gunakan akses key ['...'] >>>
     sisa_kredit_display = "∞ (Admin)" if is_admin_check(user_id) else user_data['credits']
     markup = admin_reply_markup if is_admin_check(user_id) else user_reply_markup
     await update.message.reply_text(f"👤 **Nama:** {user_data['user_name']}\n🆔 **User ID:** `{user_id}`\n💳 **Sisa kredit:** {sisa_kredit_display}", parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
@@ -406,7 +504,6 @@ async def start_fore_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     user_id = update.effective_user.id
     if not is_admin_check(user_id):
         user_data = get_user(user_id)
-        # <<< PERBAIKAN: Gunakan akses key ['...'] >>>
         if user_data['credits'] < 1:
             await update.message.reply_text(f"Kredit Anda tidak mencukupi (Sisa: {user_data['credits']}, Butuh: 1)", reply_markup=user_reply_markup)
             return ConversationHandler.END
@@ -441,9 +538,7 @@ async def receive_fore_pin(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         
         nama=data.get("nama","N/A"); reff=data.get("reff","N/A"); total_poin=data.get("total_points",0); voucher_list=data.get("vouchers",[])
         voucher_display = "Tidak ada voucher." if not voucher_list else "\n\n".join([f"  • *{v['name']}*\n    (Exp: `{v['end']}`)" for v in voucher_list])
-        
         hasil_teks = (f"☕️ **Hasil Cek Akun Fore** ☕️\n\n👤 Nama: `{nama}`\n🎟️ Reff: `{reff}`\n✨ Poin (dari History): `{total_poin}`\n\n---\n🏷️ **Voucher**\n---\n{voucher_display}")
-        
         await update.message.reply_text(hasil_teks, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
         at = data.get("access_token"); rt = data.get("refresh_token"); did = data.get("device_id")
         if at and rt and did:
@@ -464,7 +559,6 @@ async def start_order_check(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     user_id = update.effective_user.id
     if not is_admin_check(user_id):
         user_data = get_user(user_id)
-        # <<< PERBAIKAN: Gunakan akses key ['...'] >>>
         if user_data['credits'] < 5:
             await update.message.reply_text(f"Kredit Anda tidak mencukupi (Sisa: {user_data['credits']}, Butuh: 5)", reply_markup=user_reply_markup)
             return ConversationHandler.END
@@ -524,7 +618,6 @@ async def receive_order_pin_and_get_list(update: Update, context: ContextTypes.D
          queue_num = order.get('uor_queue', 'N/A')
          store_name = order.get('store', {}).get('sto_name', 'Outlet Tidak Dikenal')
          keyboard.append([InlineKeyboardButton(f"{store_name} (Antrian {queue_num})", callback_data=f"order_select_{order_id}")])
-
     
     keyboard.append([InlineKeyboardButton("Batalkan", callback_data="order_cancel")])
     await update.message.reply_text("Pilih orderan di bawah untuk detail & QR Code:", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -631,7 +724,7 @@ async def select_order_and_show_detail(update: Update, context: ContextTypes.DEF
     cost = 5; credit_deducted_key = f'credit_deducted_for_{uor_id}'
     if not is_admin_check(user_id) and not context.user_data.get(credit_deducted_key, False):
         user_data_before = get_user(user_id)
-        # <<< PERBAIKAN: Gunakan akses key ['...'] >>>
+        # <<< PERBAIKAN: Akses key ['...'] >>>
         if user_data_before and user_data_before['credits'] >= cost:
             try:
                 update_credits(user_id, -cost); context.user_data[credit_deducted_key] = True
@@ -641,7 +734,7 @@ async def select_order_and_show_detail(update: Update, context: ContextTypes.DEF
                 if access_token and refresh_token and device_id: await api_logout(access_token, refresh_token, device_id)
                 context.user_data.clear(); return ConversationHandler.END
         else:
-             # <<< PERBAIKAN: Gunakan akses key ['...'] >>>
+             # <<< PERBAIKAN: Akses key ['...'] >>>
              await context.bot.send_message(chat_id=user_id, text=f"Kredit Anda ({user_data_before['credits']}) tidak mencukupi untuk melihat detail (butuh {cost}).", reply_markup=markup)
              if access_token and refresh_token and device_id: await api_logout(access_token, refresh_token, device_id)
              context.user_data.clear(); return ConversationHandler.END
@@ -738,7 +831,7 @@ async def admin_user_list_callback(update: Update, context: ContextTypes.DEFAULT
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Target: {target_user['user_name']}\nJumlah kredit (misal: `100` atau `-10`):", parse_mode=ParseMode.MARKDOWN)
             return ASKING_CREDIT_AMOUNT
         if action in ("grant", "revoke"):
-            # <<< PERBAIKAN: Fitur admin dikembalikan, filter 'is_admin' Dihapus >>>
+            # <<< PERBAIKAN: Fitur 'is_admin' dikembalikan >>>
             perm_keyboard = [[InlineKeyboardButton(p.replace('_', ' ').title(), callback_data=f"admin_perm_{p}")] for p in PERMISSION_NAMES]
             perm_keyboard.append([InlineKeyboardButton("Batalkan", callback_data="admin_cancel_perm")])
             verb = "diberikan" if action == "grant" else "dicabut"
@@ -751,7 +844,7 @@ async def receive_credit_amount(update: Update, context: ContextTypes.DEFAULT_TY
     target_user_id = context.user_data['target_user_id']; target_user_name = context.user_data['target_user_name']
     try:
         update_credits(target_user_id, amount); new_data = get_user(target_user_id)
-        # <<< PERBAIKAN: Gunakan akses key ['...'] >>>
+        # <<< PERBAIKAN: Akses key ['...'] >>>
         await update.message.reply_text(f"✅ Berhasil!\nUser: {target_user_name}\nKredit sekarang: **{new_data['credits']}**", parse_mode=ParseMode.MARKDOWN, reply_markup=admin_reply_markup)
     except Exception as e: await update.message.reply_text(f"Gagal update DB: {e}", reply_markup=admin_reply_markup)
     context.user_data.clear(); return ConversationHandler.END
@@ -765,7 +858,7 @@ async def receive_permission_type(update: Update, context: ContextTypes.DEFAULT_
 
     parts = query_data.split("_"); permission_name = "_".join(parts[2:])
     
-    # <<< PERBAIKAN: Filter 'is_admin' Dihapus, fitur dikembalikan >>>
+    # <<< PERBAIKAN: Filter 'is_admin' Dihapus >>>
     if permission_name not in PERMISSION_NAMES:
         await query.edit_message_text("Izin tidak valid. Dibatalkan.", reply_markup=None)
         await context.bot.send_message(chat_id=update.effective_chat.id, text="Pilih aksi.", reply_markup=admin_reply_markup)
@@ -1062,25 +1155,27 @@ async def handle_store_confirmation(update: Update, context: ContextTypes.DEFAUL
              await query.edit_message_text("Sesi tidak valid. Silakan /cancel dan mulai lagi.")
              return ConversationHandler.END
 
-        await query.edit_message_text(f"✅ Toko **{store_name}** dikonfirmasi!\n\n⏳ Mengambil daftar produk...", parse_mode=ParseMode.MARKDOWN)
+        try: await query.delete_message()
+        except Exception: pass
         
-        # --- TAHAP 2: Ambil Produk ---
-        product_result = await api_get_all_products(access_token, refresh_token, device_id, store_id)
+        await context.bot.send_message(chat_id=user_id, text=f"✅ Toko **{store_name}** dikonfirmasi!\n\n⏳ Mengambil daftar produk...", parse_mode=ParseMode.MARKDOWN)
+        
+        # --- TAHAP 2: Ambil Produk (Menggunakan fungsi baru) ---
+        product_result = await api_set_store_and_get_products(access_token, refresh_token, device_id, store_id)
         
         if not product_result.get("success"):
-            await query.edit_message_text(f"Gagal mengambil produk: {product_result.get('message')}\nSilakan coba lagi atau /cancel.")
+            await context.bot.send_message(chat_id=user_id, text=f"Gagal mengambil produk: {product_result.get('message')}\nSilakan coba lagi atau /cancel.")
             confirm_keyboard = [
                 [InlineKeyboardButton("✅ Ya, Konfirmasi Toko Ini", callback_data="auto_order_confirm")],
                 [InlineKeyboardButton("❌ Tidak, Pilih Ulang", callback_data="auto_order_reselect")]
             ]
-            await query.message.reply_text("Coba konfirmasi lagi?", reply_markup=InlineKeyboardMarkup(confirm_keyboard))
+            await context.bot.send_message(chat_id=user_id, text="Coba konfirmasi lagi?", reply_markup=InlineKeyboardMarkup(confirm_keyboard))
             return CONFIRM_STORE_SELECTION
             
         all_products = product_result.get("products", [])
         if not all_products:
-            await query.edit_message_text(f"Toko **{store_name}** tidak memiliki produk aktif saat ini.\nSilakan pilih toko lain.", parse_mode=ParseMode.MARKDOWN)
+            await context.bot.send_message(chat_id=user_id, text=f"Toko **{store_name}** tidak memiliki produk aktif saat ini.\nSilakan pilih toko lain.", parse_mode=ParseMode.MARKDOWN)
             await context.bot.send_message(chat_id=user_id, text="Masukkan keyword toko baru:")
-            # Hapus data toko terpilih
             context.user_data.pop('selected_store_data', None)
             context.user_data.pop('found_stores', None)
             return ASK_STORE_KEYWORD
@@ -1096,8 +1191,9 @@ async def handle_store_confirmation(update: Update, context: ContextTypes.DEFAUL
         context.user_data['product_categories'] = categories
         
         cat_keyboard = build_category_keyboard(categories)
-        await query.edit_message_text(
-            f"Produk untuk **{store_name}**:\nSilakan pilih kategori:",
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=f"Produk untuk **{store_name}**:\nSilakan pilih kategori:",
             reply_markup=cat_keyboard,
             parse_mode=ParseMode.MARKDOWN
         )
@@ -1132,7 +1228,6 @@ async def handle_category_or_search(update: Update, context: ContextTypes.DEFAUL
         
         full_cat_name = None
         for cat_name in categories.keys():
-            # Perbandingan yang lebih aman untuk prefix
             if cat_name.startswith(selected_cat_name_prefix):
                 full_cat_name = cat_name
                 break
@@ -1197,7 +1292,8 @@ async def receive_product_search(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.reply_text(f"Hasil pencarian untuk: '{keyword}'", reply_markup=prod_keyboard)
     context.user_data['previous_state'] = ASK_PRODUCT_SEARCH
     return SHOW_SEARCH_RESULTS
-    
+
+# <<< FUNGSI DIPERBARUI: Menangani Pemilihan Produk & Memulai Kustomisasi >>>
 async def handle_product_list_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query; await query.answer()
     query_data = query.data; user_id = update.effective_user.id
@@ -1222,7 +1318,7 @@ async def handle_product_list_action(update: Update, context: ContextTypes.DEFAU
         
     elif query_data.startswith("prod_select_"):
         try:
-            selected_pd_id = int(query_data.split("_")[-1])
+            selected_pd_id = int(query_data.split("_")[-1]) # Ini Parent PD_ID (cth: 2070)
             all_products = context.user_data.get('store_products', [])
             selected_product = next((prod for prod in all_products if prod.get('pd_id') == selected_pd_id), None)
             
@@ -1230,39 +1326,244 @@ async def handle_product_list_action(update: Update, context: ContextTypes.DEFAU
                 await query.edit_message_text("Produk tidak ditemukan. Silakan pilih lagi.")
                 return context.user_data.get('previous_state', SHOW_PRODUCT_CATEGORIES)
 
-            context.user_data['selected_product'] = selected_product
-            pd_name = selected_product.get('pd_name', 'N/A')
+            # Simpan info produk induk
+            context.user_data['selected_parent_product'] = selected_product
             
-            logger.info(f"User {user_id} memilih produk: {pd_name} ({selected_pd_id})")
+            store_id = context.user_data['selected_store_data']['st_id']
+            access_token = context.user_data.get('auto_order_access_token')
+            refresh_token = context.user_data.get('auto_order_refresh_token')
+            device_id = context.user_data.get('auto_order_device_id')
             
-            await query.edit_message_text(f"✅ Produk dipilih: **{pd_name}**", parse_mode=ParseMode.MARKDOWN)
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="Tahap 2 (Pilih Produk) selesai. Fitur selanjutnya (Pilih Opsi & Bayar) belum siap.\nSesi Auto Order selesai.",
-                reply_markup=markup
-            )
-            
-            # Bersihkan data, TAPI SIMPAN token, toko, & produk
-            context.user_data.pop('store_products', None)
-            context.user_data.pop('product_categories', None)
-            context.user_data.pop('current_product_list', None)
-            context.user_data.pop('search_results', None)
-            context.user_data.pop('found_stores', None)
-            context.user_data.pop('store_map', None)
-            context.user_data.pop('current_keyword', None)
-            # Hapus juga data login Cek Akun Fore (jika ada)
-            context.user_data.pop('phone_root', None)
-            
-            return ConversationHandler.END
+            await query.edit_message_text(f"⏳ Mengambil detail untuk **{selected_product.get('pd_name')}**...", parse_mode=ParseMode.MARKDOWN)
 
-        except (ValueError, IndexError):
-            logger.warning(f"Callback data pemilihan produk tidak valid: {query_data}")
+            # Panggil API Detail Produk
+            detail_result = await api_get_product_detail(access_token, refresh_token, device_id, selected_pd_id, store_id)
+            
+            if not detail_result.get("success"):
+                await query.edit_message_text(f"Gagal mengambil detail produk: {detail_result.get('message')}")
+                return context.user_data.get('previous_state', SHOW_PRODUCT_CATEGORIES)
+
+            detail_data = detail_result.get("data", {})
+            
+            # Cari child product (pd_main)
+            if not detail_data.get('pd_main') or not isinstance(detail_data['pd_main'], list) or len(detail_data['pd_main']) == 0:
+                await query.edit_message_text("Produk ini tidak memiliki varian (pd_main) yang valid.")
+                return context.user_data.get('previous_state', SHOW_PRODUCT_CATEGORIES)
+
+            # Ambil child product pertama (cth: Iced Dirty Matchapresso, pd_id: 2071)
+            child_product = detail_data['pd_main'][0]
+            child_pd_id = child_product.get('pd_id')
+            all_options = child_product.get('pd_additionals', [])
+            
+            if not child_pd_id or not all_options:
+                await query.edit_message_text("Varian produk tidak memiliki ID atau daftar opsi (pd_additionals).")
+                return context.user_data.get('previous_state', SHOW_PRODUCT_CATEGORIES)
+
+            # Simpan data penting untuk kustomisasi
+            context.user_data['child_pd_id'] = child_pd_id
+            context.user_data['product_options_list'] = all_options
+            context.user_data['current_selections'] = {} # Untuk menyimpan {cat_id: pa_id}
+            context.user_data['selected_option_names'] = {} # Untuk menyimpan {cat_name: option_name}
+
+            # Mulai wawancara
+            await ask_next_option(query, context) # Kirim query agar bisa diedit
+            return SELECT_PRODUCT_OPTIONS
+
+        except (ValueError, IndexError) as e:
+            logger.error(f"Error di handle_product_list_action: {e}")
             await query.edit_message_text("Pilihan produk tidak valid. Silakan coba lagi.")
             return context.user_data.get('previous_state', SHOW_PRODUCT_CATEGORIES)
 
     else:
-        logger.warning(f"Callback tidak dikenal di SHOW_PRODUCT_LIST/SHOW_SEARCH_RESULTS: {query_data}")
+        logger.warning(f"Callback tidak dikenal di SHOW_PRODUCT_LIST/SEARCH: {query_data}")
         return context.user_data.get('previous_state', SHOW_PRODUCT_CATEGORIES)
+
+async def ask_next_option(update_or_query, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Menemukan opsi wajib berikutnya yang belum ditanyakan dan menampilkannya."""
+    
+    current_selections = context.user_data.get('current_selections', {})
+    all_options = context.user_data.get('product_options_list', [])
+    
+    next_cat_id_to_ask = None
+    for cat_id in REQUIRED_OPTION_CAT_IDS: # Loop [6, 26, 16]
+        if cat_id not in current_selections:
+            next_cat_id_to_ask = cat_id
+            break # Temukan yang pertama belum diisi
+
+    # Jika semua sudah terisi, saatnya add to cart
+    if next_cat_id_to_ask is None:
+        logger.info("Semua opsi wajib (6, 26, 16) telah dipilih. Memproses ke keranjang...")
+        return await process_add_to_cart(update_or_query, context)
+
+    # Filter opsi untuk kategori yang akan ditanyakan
+    options_for_cat = [opt for opt in all_options if opt.get('cat_id') == next_cat_id_to_ask and opt.get('stpd_status') == 'active']
+    
+    if not options_for_cat:
+        logger.warning(f"Produk {context.user_data.get('child_pd_id')} tidak memiliki opsi aktif untuk cat_id wajib: {next_cat_id_to_ask}")
+        # Coba lewati dan tanya berikutnya
+        context.user_data['current_selections'][next_cat_id_to_ask] = None # Tandai sebagai "dilewati"
+        return await ask_next_option(update_or_query, context)
+
+    cat_name = options_for_cat[0].get('cat_name', f'Opsi {next_cat_id_to_ask}')
+    
+    # Buat keyboard untuk opsi
+    keyboard = []
+    for opt in options_for_cat:
+        pa_id = opt.get('pa_id')
+        opt_name = opt.get('name_additional', f'ID {pa_id}')
+        price = opt.get('pd_final_price', 0)
+        
+        button_text = f"{opt_name}"
+        if price > 0:
+            button_text += f" (+{price:,.0f} IDR)"
+            
+        # Callback data: option_select_{cat_id}_{pa_id}
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"option_select_{next_cat_id_to_ask}_{pa_id}")])
+    
+    # Tambah tombol Batal
+    keyboard.append([InlineKeyboardButton("❌ Batalkan Order", callback_data="auto_order_cancel")])
+
+    message_text = f"Pilih **{cat_name}**:"
+    
+    # Tentukan cara mengirim/mengedit pesan
+    if isinstance(update_or_query, Update): # Jika ini panggilan pertama (dari MessageHandler)
+        await update_or_query.message.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard))
+    elif hasattr(update_or_query, 'edit_message_text'): # Jika ini dari CallbackQuery
+        try:
+            await update_or_query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard))
+        except Exception as e:
+            logger.warning(f"Gagal edit pesan, mengirim pesan baru: {e}")
+            await context.bot.send_message(chat_id=update_or_query.effective_chat.id, text=message_text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    return SELECT_PRODUCT_OPTIONS
+
+async def handle_product_option_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Menangani callback saat user memilih opsi produk."""
+    query = update.callback_query; await query.answer()
+    query_data = query.data # cth: "option_select_6_9616"
+    
+    try:
+        _, _, cat_id_str, pa_id_str = query_data.split("_")
+        cat_id = int(cat_id_str)
+        pa_id = int(pa_id_str)
+    except Exception as e:
+        logger.error(f"Callback opsi tidak valid: {query_data} - Error: {e}")
+        return SELECT_PRODUCT_OPTIONS # Tetap di state ini
+
+    # Simpan pilihan
+    context.user_data['current_selections'][cat_id] = pa_id
+    
+    # Simpan nama untuk ringkasan
+    all_options = context.user_data.get('product_options_list', [])
+    option_name = "N/A"
+    cat_name = f"Cat {cat_id}"
+    for opt in all_options:
+        if opt.get('pa_id') == pa_id:
+            option_name = opt.get('name_additional', 'N/A')
+            cat_name = opt.get('cat_name', cat_name)
+            break
+            
+    context.user_data['selected_option_names'][cat_name] = option_name
+    
+    # Edit pesan untuk konfirmasi pilihan
+    await query.edit_message_text(f"✅ {cat_name}: **{option_name}**\n\n...memuat opsi berikutnya...", parse_mode=ParseMode.MARKDOWN)
+
+    # Tanyakan opsi berikutnya
+    return await ask_next_option(query, context)
+
+async def process_add_to_cart(update_or_query, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Mengumpulkan semua pa_id (wajib + default) dan mengirim ke API Cart."""
+    # update_or_query ADALAH OBJEK CallbackQuery, BUKAN Update
+    user_id = update_or_query.from_user.id
+    chat_id = update_or_query.message.chat.id
+    markup = admin_reply_markup if is_admin_check(user_id) else user_reply_markup
+    
+    try:
+        await context.bot.send_message(chat_id=chat_id, text="✅ Semua opsi wajib telah dipilih. Menambahkan ke keranjang...")
+    except Exception as e:
+        logger.warning(f"Gagal kirim pesan 'Menambahkan ke keranjang': {e}")
+        
+    # Kumpulkan data
+    store_id = context.user_data['selected_store_data']['st_id']
+    child_pd_id = context.user_data['child_pd_id']
+    all_options = context.user_data.get('product_options_list', [])
+    user_selections = context.user_data.get('current_selections', {})
+    
+    access_token = context.user_data.get('auto_order_access_token')
+    refresh_token = context.user_data.get('auto_order_refresh_token')
+    device_id = context.user_data.get('auto_order_device_id')
+
+    final_pa_ids = list(user_selections.values()) # Tambahkan 3 pilihan user
+    
+    # Cari default untuk kategori wajib LAINNYA
+    all_required_cat_ids = set()
+    for opt in all_options:
+        if opt.get('cat_is_required') == 1:
+            all_required_cat_ids.add(opt.get('cat_id'))
+            
+    # Hapus cat_id yang sudah dipilih user dari daftar pencarian default
+    for cat_id in user_selections.keys():
+        all_required_cat_ids.discard(cat_id)
+        
+    # Cari default untuk sisa cat_id wajib
+    for cat_id in all_required_cat_ids:
+        found_default = False
+        for opt in all_options:
+            if opt.get('cat_id') == cat_id and opt.get('is_default') == 1 and opt.get('stpd_status') == 'active':
+                final_pa_ids.append(opt.get('pa_id'))
+                # Simpan juga namanya untuk ringkasan
+                context.user_data['selected_option_names'][opt.get('cat_name')] = opt.get('name_additional')
+                found_default = True
+                break
+        if not found_default:
+            logger.warning(f"Tidak ditemukan pa_id default (is_default=1) yang aktif untuk cat_id wajib {cat_id}")
+            # Opsional: ambil saja yang pertama aktif jika tidak ada default
+            for opt in all_options:
+                 if opt.get('cat_id') == cat_id and opt.get('stpd_status') == 'active':
+                    final_pa_ids.append(opt.get('pa_id'))
+                    context.user_data['selected_option_names'][opt.get('cat_name')] = opt.get('name_additional')
+                    logger.warning(f"Menggunakan opsi aktif pertama ({opt.get('pa_id')}) untuk cat_id {cat_id}")
+                    found_default = True
+                    break
+            
+            if not found_default:
+                 logger.error(f"FATAL: Tidak ada opsi aktif sama sekali untuk cat_id wajib {cat_id}")
+                 await context.bot.send_message(chat_id=chat_id, text=f"Error: Produk tidak valid, tidak ada opsi aktif untuk {cat_id}. Order dibatalkan.", reply_markup=markup)
+                 await api_logout(access_token, refresh_token, device_id)
+                 context.user_data.clear(); return ConversationHandler.END
+
+    logger.info(f"Final pa_ids untuk dikirim ke cart: {final_pa_ids}")
+    
+    # Panggil API Add to Cart
+    cart_result = await api_add_to_cart(access_token, refresh_token, device_id, store_id, child_pd_id, final_pa_ids)
+    
+    if not cart_result.get("success"):
+        await context.bot.send_message(chat_id=chat_id, text=f"Gagal menambahkan ke keranjang: {cart_result.get('message')}\nSesi ditutup.", reply_markup=markup)
+        await api_logout(access_token, refresh_token, device_id)
+        context.user_data.clear(); return ConversationHandler.END
+
+    # Tampilkan Ringkasan
+    cart_data = cart_result.get("data", {})
+    subtotal = cart_data.get('uor_subtotal', 0)
+    
+    parent_product_name = context.user_data.get('selected_parent_product', {}).get('pd_name', 'Produk')
+    options_summary_list = [f"  • {name}: {opt}" for name, opt in context.user_data.get('selected_option_names', {}).items()]
+    options_summary = "\n".join(options_summary_list)
+
+    summary_text = (
+        "🛒 **Berhasil Ditambahkan ke Keranjang!**\n\n"
+        f"**{parent_product_name}**\n"
+        f"{options_summary}\n\n"
+        f"**Total: {subtotal:,.0f} IDR**\n\n"
+        "Fitur checkout belum siap. Sesi Auto Order ditutup."
+    )
+    
+    await context.bot.send_message(chat_id=chat_id, text=summary_text, reply_markup=markup)
+    
+    # Logout dan bersihkan
+    await api_logout(access_token, refresh_token, device_id)
+    context.user_data.clear()
+    return ConversationHandler.END
 
 async def cancel_auto_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
@@ -1336,7 +1637,6 @@ def main() -> None:
         states={
             ASK_ORDER_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_order_phone)],
             ASK_ORDER_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_order_pin_and_get_list)],
-            # <<< PERBAIKAN: regex di order_select_.* >>>
             SELECTING_ORDER: [CallbackQueryHandler(select_order_and_show_detail, pattern="^order_select_.*|^order_cancel$")],
             AWAITING_REFRESH: [CallbackQueryHandler(handle_refresh_or_finish, pattern="^order_action_")]
         },
@@ -1345,7 +1645,7 @@ def main() -> None:
         conversation_timeout=DEFAULT_TIMEOUT_SECONDS
     )
 
-    # --- Conversation Handler untuk Auto Order --- <<< PATTERN DIPERBAIKI >>>
+    # --- Conversation Handler untuk Auto Order --- <<< DIPERBARUI DENGAN STATE BARU >>>
     auto_order_conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.TEXT & filters.Regex("^Auto Order$"), start_auto_order_login)],
         states={
@@ -1354,16 +1654,16 @@ def main() -> None:
             ASK_LOGIN_PIN_FOR_AUTO_ORDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_auto_order_login_pin_and_ask_keyword)],
             # Tahap 1: Pilih Toko
             ASK_STORE_KEYWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_store_keyword)],
-            # <<< PERBAIKAN: regex di auto_order_select_.* >>>
             SHOW_STORE_LIST: [CallbackQueryHandler(handle_store_selection_or_action, pattern="^auto_order_(select_.*|search_again|cancel)$")],
             CONFIRM_STORE_SELECTION: [CallbackQueryHandler(handle_store_confirmation, pattern="^auto_order_(confirm|reselect)$")],
-            # Tahap 2: Pilih Produk
-            # <<< PERBAIKAN: regex di prod_cat_.* >>>
+            # Tahap 2 & 3: Pilih Produk & Opsi
             SHOW_PRODUCT_CATEGORIES: [CallbackQueryHandler(handle_category_or_search, pattern="^prod_(cat_.*|search|back_store)$")],
             ASK_PRODUCT_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_product_search)],
-            # <<< PERBAIKAN: regex di prod_select_.* >>>
             SHOW_PRODUCT_LIST: [CallbackQueryHandler(handle_product_list_action, pattern="^prod_(select_.*|back_cat)$")],
-            SHOW_SEARCH_RESULTS: [CallbackQueryHandler(handle_product_list_action, pattern="^prod_(select_.*|back_search)$")]
+            SHOW_SEARCH_RESULTS: [CallbackQueryHandler(handle_product_list_action, pattern="^prod_(select_.*|back_search)$")],
+            # <<< BARU: State untuk memilih opsi >>>
+            SELECT_PRODUCT_OPTIONS: [CallbackQueryHandler(handle_product_option_selection, pattern="^option_select_.*")],
+            # (State HANDLE_ADD_TO_CART tidak diperlukan karena dipanggil langsung)
         },
         fallbacks=[CommandHandler("cancel", cancel_auto_order), CallbackQueryHandler(cancel_auto_order, pattern="^auto_order_cancel$")],
         per_user=True, per_message=False,
